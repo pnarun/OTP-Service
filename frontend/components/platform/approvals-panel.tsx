@@ -1,7 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { Check, Loader2, RefreshCw, X } from 'lucide-react';
+import Link from 'next/link';
+import { Check, KeyRound, Loader2, RefreshCw, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   approveIntegrationRequest,
@@ -10,6 +11,7 @@ import {
   rejectIntegrationRequest,
   type BrandRequestAdmin,
 } from '@/lib/integration-api';
+import { ApplicationsCredentialsPanel } from '@/components/platform/applications-credentials-panel';
 
 type StatusFilter = 'pending' | 'approved' | 'rejected' | 'all';
 
@@ -21,6 +23,12 @@ export function ApprovalsPanel() {
   const [actionId, setActionId] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState<Record<string, string>>({});
   const [reviewedBy, setReviewedBy] = useState('');
+  const [issuedCredential, setIssuedCredential] = useState<{
+    requestId: string;
+    appId: string;
+    apiKey: string;
+    warning?: string;
+  } | null>(null);
 
   const loadRequests = useCallback(async () => {
     const activeToken = getOpsAdminToken();
@@ -51,9 +59,17 @@ export function ApprovalsPanel() {
     setActionId(requestId);
     setError(null);
     try {
-      await approveIntegrationRequest(activeToken, requestId, {
+      const result = await approveIntegrationRequest(activeToken, requestId, {
         reviewedBy: reviewedBy.trim() || undefined,
       });
+      if (result.oneTimeCredential?.apiKey) {
+        setIssuedCredential({
+          requestId,
+          appId: result.oneTimeCredential.appId,
+          apiKey: result.oneTimeCredential.apiKey,
+          warning: result.oneTimeCredential.warning,
+        });
+      }
       await loadRequests();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Approval failed');
@@ -125,6 +141,36 @@ export function ApprovalsPanel() {
           </p>
         ) : null}
 
+        {issuedCredential ? (
+          <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-sm">
+            <p className="font-semibold text-amber-900 dark:text-amber-100">
+              One-time API credentials — copy now
+            </p>
+            <p className="mt-1 text-muted-foreground">
+              {issuedCredential.warning ?? 'This apiKey will not be shown again.'}
+            </p>
+            <dl className="mt-3 space-y-2 font-mono text-xs">
+              <div>
+                <dt className="text-muted-foreground">appId</dt>
+                <dd className="break-all">{issuedCredential.appId}</dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">apiKey</dt>
+                <dd className="break-all">{issuedCredential.apiKey}</dd>
+              </div>
+            </dl>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="mt-3"
+              onClick={() => setIssuedCredential(null)}
+            >
+              Dismiss
+            </Button>
+          </div>
+        ) : null}
+
         {loading && requests.length === 0 ? (
           <p className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
@@ -175,12 +221,16 @@ export function ApprovalsPanel() {
                   <dd>{new Date(request.submittedAt).toLocaleString()}</dd>
                 </div>
                 <div>
-                  <dt className="text-muted-foreground">OTP templates</dt>
+                  <dt className="text-muted-foreground">SMS OTP templates</dt>
                   <dd className="font-mono">{request.templates.otp.join(', ') || 'none'}</dd>
                 </div>
                 <div>
-                  <dt className="text-muted-foreground">Notify templates</dt>
+                  <dt className="text-muted-foreground">SMS Notify templates</dt>
                   <dd className="font-mono">{request.templates.notify.join(', ') || 'none'}</dd>
+                </div>
+                <div>
+                  <dt className="text-muted-foreground">EMAIL Templates</dt>
+                  <dd className="font-mono">{(request.templates.email ?? []).join(', ') || 'none'}</dd>
                 </div>
                 <div>
                   <dt className="text-muted-foreground">OTP policy</dt>
@@ -247,6 +297,22 @@ export function ApprovalsPanel() {
                 <p className="mt-3 text-sm text-muted-foreground">
                   <span className="font-medium">Rejection:</span> {request.rejectionReason}
                 </p>
+              ) : null}
+
+              {request.status === 'approved' ? (
+                <div className="mt-4 space-y-3 border-t pt-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <KeyRound className="h-4 w-4 text-primary" />
+                    <p className="text-sm font-medium">Credential management</p>
+                    <Link
+                      href="/platform/businesses#api-applications"
+                      className="text-xs text-primary hover:underline"
+                    >
+                      Open businesses applications
+                    </Link>
+                  </div>
+                  <ApplicationsCredentialsPanel brandIdFilter={request.brandId} compact />
+                </div>
               ) : null}
             </article>
           ))}

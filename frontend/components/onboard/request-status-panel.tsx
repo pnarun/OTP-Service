@@ -100,12 +100,16 @@ export function RequestStatusPanel({ requestId }: RequestStatusPanelProps) {
       <section className="rounded-xl border bg-card p-5 shadow-sm">
         <h2 className="text-sm font-semibold">Requested templates</h2>
         <p className="mt-2 text-sm">
-          <span className="text-muted-foreground">OTP:</span>{' '}
+          <span className="text-muted-foreground">SMS OTP:</span>{' '}
           <span className="font-mono">{request.templates.otp.join(', ') || 'none'}</span>
         </p>
         <p className="mt-1 text-sm">
-          <span className="text-muted-foreground">Notify:</span>{' '}
+          <span className="text-muted-foreground">SMS Notify:</span>{' '}
           <span className="font-mono">{request.templates.notify.join(', ') || 'none'}</span>
+        </p>
+        <p className="mt-1 text-sm">
+          <span className="text-muted-foreground">EMAIL:</span>{' '}
+          <span className="font-mono">{(request.templates.email ?? []).join(', ') || 'none'}</span>
         </p>
       </section>
 

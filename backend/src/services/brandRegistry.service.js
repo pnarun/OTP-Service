@@ -16,6 +16,10 @@ const BRAND_STATUSES = Object.freeze(['active', 'suspended', 'pending']);
 
 const OTP_TEMPLATE_KEYS = Object.freeze(['LOGIN_OTP', 'LOGIN_OTP_WITH_ID']);
 
+const EMAIL_TEMPLATE_KEYS = Object.freeze(['LOGIN_OTP', 'LOGIN_OTP_WITH_ID', 'NOTIFY_USER']);
+
+const EMAIL_OTP_TEMPLATE_KEYS = Object.freeze(['LOGIN_OTP', 'LOGIN_OTP_WITH_ID']);
+
 const OTP_TEMPLATE_VARIABLE_REQUIREMENTS = Object.freeze({
   LOGIN_OTP: Object.freeze(['businessName', 'otp']),
   LOGIN_OTP_WITH_ID: Object.freeze(['businessName', 'loginId', 'otp']),
@@ -181,9 +185,20 @@ function validateBrandEntry(brandId, entry) {
 
   const otpTemplates = assertStringArray(entry.templates.otp, 'templates.otp', brandId);
   const notifyTemplates = assertStringArray(entry.templates.notify, 'templates.notify', brandId);
+  const emailTemplates = entry.templates.email === undefined
+    ? []
+    : assertStringArray(entry.templates.email, 'templates.email', brandId);
 
-  if (otpTemplates.length === 0 && notifyTemplates.length === 0) {
-    throw new Error(`Brand "${brandId}" must allow at least one OTP or notify template`);
+  if (otpTemplates.length === 0 && notifyTemplates.length === 0 && emailTemplates.length === 0) {
+    throw new Error(`Brand "${brandId}" must allow at least one SMS or EMAIL template`);
+  }
+
+  for (const templateKey of emailTemplates) {
+    if (!EMAIL_TEMPLATE_KEYS.includes(templateKey)) {
+      throw new Error(
+        `Brand "${brandId}" templates.email entry "${templateKey}" is not supported`,
+      );
+    }
   }
 
   for (const templateKey of otpTemplates) {
@@ -223,9 +238,16 @@ function validateBrandEntry(brandId, entry) {
   );
 
   if (!otpTemplates.includes(otpTemplateKey)) {
-    throw new Error(
-      `Brand "${brandId}" otpPolicy.templateKey "${otpTemplateKey}" must be listed in templates.otp`,
-    );
+    const emailOtpKeys = emailTemplates.filter((key) => EMAIL_OTP_TEMPLATE_KEYS.includes(key));
+    const emailOtpMatch = emailOtpKeys.includes(otpTemplateKey);
+    const smsOtpRequired = otpTemplates.length > 0 || emailOtpKeys.length > 0;
+
+    if (smsOtpRequired && !emailOtpMatch) {
+      throw new Error(
+        `Brand "${brandId}" otpPolicy.templateKey "${otpTemplateKey}" must be listed in templates.otp`
+        + (emailOtpKeys.length > 0 ? ' or templates.email OTP selections' : ''),
+      );
+    }
   }
 
   assertBooleanField(entry.otpPolicy.dltEnabled, 'otpPolicy.dltEnabled', brandId);
@@ -435,6 +457,7 @@ function serializeBrand(brandId, entry) {
     templates: {
       otp: [...entry.templates.otp],
       notify: [...entry.templates.notify],
+      email: Array.isArray(entry.templates.email) ? [...entry.templates.email] : [],
     },
     otpPolicy: {
       templateKey: entry.otpPolicy.templateKey,

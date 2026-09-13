@@ -17,6 +17,10 @@ function extractProviderFailure(err) {
     err instanceof Error && err.providerFailure && typeof err.providerFailure === 'object'
       ? err.providerFailure
       : null;
+  const emailDelivery =
+    err instanceof Error && err.emailDelivery && typeof err.emailDelivery === 'object'
+      ? err.emailDelivery
+      : null;
 
   const providerResponse =
     providerFailure?.providerBody ??
@@ -35,12 +39,16 @@ function extractProviderFailure(err) {
         : null),
     providerResponse,
     httpStatus: providerFailure?.httpStatus ?? null,
-    provider: providerFailure?.provider ?? 'fast2sms',
+    // Prefer explicit provider; never invent fast2sms for email failures.
+    provider: providerFailure?.provider
+      ?? emailDelivery?.selectedProvider
+      ?? null,
   };
 }
 
 /**
  * Dev-only provider block for API error responses. Returns undefined in production.
+ * Always includes provider name when known (including EMAIL providers).
  *
  * @param {unknown} err
  * @returns {object | undefined}
@@ -51,16 +59,28 @@ function buildDevProviderError(err) {
   }
 
   const failure = extractProviderFailure(err);
-  if (!failure.providerMessage && failure.httpStatus == null && failure.providerResponse == null) {
+  const emailDelivery =
+    err instanceof Error && err.emailDelivery && typeof err.emailDelivery === 'object'
+      ? err.emailDelivery
+      : null;
+
+  if (
+    !failure.providerMessage
+    && failure.httpStatus == null
+    && failure.providerResponse == null
+    && !failure.provider
+    && !emailDelivery
+  ) {
     return undefined;
   }
 
   return {
-    name: failure.provider ?? 'fast2sms',
+    name: failure.provider ?? null,
     status: failure.httpStatus,
     message: failure.providerMessage,
     ...(failure.providerCode ? { code: failure.providerCode } : {}),
     ...(failure.providerResponse != null ? { response: failure.providerResponse } : {}),
+    ...(emailDelivery?.finalOutcome ? { finalOutcome: emailDelivery.finalOutcome } : {}),
   };
 }
 

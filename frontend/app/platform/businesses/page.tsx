@@ -3,6 +3,7 @@ import { BusinessCard } from '@/components/platform/business-card';
 import { BusinessSearchDialog } from '@/components/platform/business-search-dialog';
 import { BusinessReadinessTable } from '@/components/platform/business-readiness-table';
 import { BusinessOnboardingChecklist } from '@/components/platform/business-onboarding-checklist';
+import { ApplicationsCredentialsPanel } from '@/components/platform/applications-credentials-panel';
 
 export const dynamic = 'force-dynamic';
 
@@ -31,6 +32,8 @@ export default async function PlatformBusinessesPage() {
           <BusinessSearchDialog manifest={manifest} />
         </div>
       </header>
+
+      <ApplicationsCredentialsPanel />
 
       <section className="mb-10">
         <h2 className="mb-4 text-xl font-semibold">Onboarding summary</h2>

@@ -7,7 +7,7 @@ import { Activity, FlaskConical, KeyRound, Layers, Server } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { API_BASE_URL, getApiEnvironmentLabel } from '@/lib/config';
 import { docsHref } from '@/lib/paths';
-import { buildCurlCommand, PLAYGROUND_TABS } from '@/lib/playground-config';
+import { PLAYGROUND_TABS } from '@/lib/playground-config';
 import { activePlaygroundBrands, resolveBrandDisplayName } from '@/lib/playground-brand-utils';
 import { fetchPlatformBrands } from '@/lib/platform-api';
 import { ApiEndpointTester, type RequestHistoryItem } from '@/components/playground/api-endpoint-tester';

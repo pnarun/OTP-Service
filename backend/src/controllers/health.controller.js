@@ -1,4 +1,5 @@
 const { readOtpHealthSnapshot } = require('../services/otpHealthSnapshot.service');
+const { isMongoConfigured, isMongoConnected, pingMongo } = require('../db/connection');
 
 function buildHealthPayload(req) {
   const response = {
@@ -23,11 +24,28 @@ function buildHealthPayload(req) {
     };
   }
 
+  // Phase 1: MongoDB health is informational only — never fails /health for existing users.
+  response.mongodb = {
+    configured: isMongoConfigured(),
+    connected: isMongoConnected(),
+  };
+
   return response;
 }
 
-function getHealth(req, res) {
-  res.status(200).json(buildHealthPayload(req));
+async function getHealth(req, res) {
+  const payload = buildHealthPayload(req);
+
+  if (isMongoConfigured()) {
+    const ping = await pingMongo();
+    payload.mongodb = {
+      configured: ping.configured,
+      connected: ping.ok,
+      // Deliberately omit URI, credentials, and server details.
+    };
+  }
+
+  res.status(200).json(payload);
 }
 
 /** Lightweight probe for Render / UptimeRobot (no response body). */

@@ -2,7 +2,10 @@ const http = require('http');
 const app = require('./app');
 const { port, nodeEnv } = require('./config/env');
 const { connectRedis, disconnectRedis } = require('./services/redis.service');
+const { connectMongo, disconnectMongo, isMongoConfigured } = require('./db/connection');
+const { ensureIndexes } = require('./db/indexes');
 const { logSystem } = require('./services/logging/businessLogger.service');
+const { startDailyReportScheduler, stopDailyReportScheduler } = require('./services/reports/dailyReport.scheduler');
 require('./businesses');
 
 /** @type {import('http').Server | null} */
@@ -55,6 +58,8 @@ async function shutdown(signal) {
     }
 
     await disconnectRedis();
+    stopDailyReportScheduler();
+    await disconnectMongo();
     clearTimeout(forceExit);
     logSystem('service_shutdown', 'completed', {}, { signal, port });
     process.exit(0);
@@ -79,6 +84,21 @@ async function start() {
 
   await connectRedis();
 
+  if (isMongoConfigured()) {
+    try {
+      await connectMongo();
+      await ensureIndexes();
+    } catch (err) {
+      logSystem('mongodb_startup_failed', 'failed', {}, {
+        message: err instanceof Error ? err.message : 'unknown',
+      });
+      console.error('[elva-otp-service] MongoDB startup failed:', err.message);
+      if (process.env.MONGODB_REQUIRED === 'true') {
+        process.exit(1);
+      }
+    }
+  }
+
   server = http.createServer(app);
 
   server.on('error', (err) => {
@@ -93,6 +113,13 @@ async function start() {
 
   server.listen(port, () => {
     logSystem('service_started', 'completed', {}, { port, nodeEnv, pid: process.pid });
+    try {
+      startDailyReportScheduler();
+    } catch (err) {
+      logSystem('daily_report_scheduler_start_failed', 'failed', {}, {
+        message: err instanceof Error ? err.message : 'unknown',
+      });
+    }
   });
 }
 

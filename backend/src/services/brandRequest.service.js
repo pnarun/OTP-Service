@@ -15,11 +15,19 @@ const {
   writeJsonAtomically,
 } = require('./brandRegistry.service');
 const { logSystem } = require('./logging/businessLogger.service');
+const { isMongoConfigured } = require('../db/connection');
+const accessRequestRepo = require('../repositories/accessRequest.repository');
+const brandStore = require('./brandStore.service');
+const auditService = require('./audit.service');
+const { provisionApprovedAccess } = require('./approvalProvisioning.service');
 
 const BRAND_REQUESTS_PATH = path.join(__dirname, '../../config/tenants/brand-requests.json');
 const DEFAULT_BUSINESS_MODULE = 'apnakart';
 const REQUEST_STATUSES = Object.freeze(['pending', 'approved', 'rejected']);
 const OTP_TEMPLATE_KEYS = Object.freeze(['LOGIN_OTP', 'LOGIN_OTP_WITH_ID']);
+/** EMAIL capability keys (independent of SMS otp/notify selections). */
+const EMAIL_TEMPLATE_KEYS = Object.freeze(['LOGIN_OTP', 'LOGIN_OTP_WITH_ID', 'NOTIFY_USER']);
+const EMAIL_TEMPLATE_KEY_SET = new Set(EMAIL_TEMPLATE_KEYS);
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -94,7 +102,39 @@ function listCatalogTemplates() {
     businessModule: DEFAULT_BUSINESS_MODULE,
     otp,
     notify,
+    email: [
+      {
+        templateKey: 'LOGIN_OTP',
+        purpose: 'Send one-time passwords by EMAIL via POST /otp/send.',
+      },
+      {
+        templateKey: 'LOGIN_OTP_WITH_ID',
+        purpose: 'Send EMAIL OTP with an additional identity field via POST /otp/send.',
+      },
+      {
+        templateKey: 'NOTIFY_USER',
+        purpose: 'Send custom EMAIL notifications via POST /notify (caller provides subject and HTML).',
+      },
+    ],
   };
+}
+
+/**
+ * Derive SMS / EMAIL channels from independent template selections.
+ * Legacy callers that omit `templates.email` still get EMAIL when channels are hardcoded elsewhere.
+ */
+function buildRequestedChannels(templates) {
+  const otp = Array.isArray(templates?.otp) ? templates.otp : [];
+  const notify = Array.isArray(templates?.notify) ? templates.notify : [];
+  const email = Array.isArray(templates?.email) ? templates.email : [];
+  const channels = [];
+  if (otp.length > 0 || notify.length > 0) {
+    channels.push('SMS');
+  }
+  if (email.length > 0) {
+    channels.push('EMAIL');
+  }
+  return channels;
 }
 
 function validateRequestedTemplates(templates) {
@@ -107,9 +147,13 @@ function validateRequestedTemplates(templates) {
   const notify = Array.isArray(templates.notify)
     ? templates.notify.map((k) => String(k).trim()).filter(Boolean)
     : [];
+  // Absent `email` → legacy SMS-only payload (treat as []). Explicit array → EMAIL selections.
+  const email = Array.isArray(templates.email)
+    ? templates.email.map((k) => String(k).trim()).filter(Boolean)
+    : [];
 
-  if (otp.length === 0 && notify.length === 0) {
-    throw new Error('Select at least one OTP or notify template');
+  if (otp.length === 0 && notify.length === 0 && email.length === 0) {
+    throw new Error('Select at least one SMS or EMAIL template');
   }
 
   const catalogOtp = new Set(catalog.otp.map((entry) => entry.templateKey));
@@ -127,18 +171,27 @@ function validateRequestedTemplates(templates) {
     }
   }
 
+  for (const key of email) {
+    if (!EMAIL_TEMPLATE_KEY_SET.has(key)) {
+      throw new Error(`Unknown EMAIL template: ${key}`);
+    }
+  }
+
   let otpTemplateKey = 'LOGIN_OTP';
-  if (otp.includes('LOGIN_OTP_WITH_ID')) {
+  if (otp.includes('LOGIN_OTP_WITH_ID') || email.includes('LOGIN_OTP_WITH_ID')) {
     otpTemplateKey = 'LOGIN_OTP_WITH_ID';
-  } else if (otp.includes('LOGIN_OTP')) {
+  } else if (otp.includes('LOGIN_OTP') || email.includes('LOGIN_OTP')) {
     otpTemplateKey = 'LOGIN_OTP';
   }
 
   return {
     otp,
     notify,
+    email,
     otpPolicy: {
-      templateKey: otp.length > 0 ? otpTemplateKey : 'LOGIN_OTP',
+      templateKey: (otp.length > 0 || email.includes('LOGIN_OTP') || email.includes('LOGIN_OTP_WITH_ID'))
+        ? otpTemplateKey
+        : 'LOGIN_OTP',
       dltEnabled: true,
       legacyRouteEnabled: false,
     },
@@ -153,13 +206,18 @@ function findPendingRequestForBrand(brandId) {
 }
 
 function serializePublicRequest(entry) {
+  const templates = entry.templates ?? {};
   return {
     id: entry.id,
     status: entry.status,
     brandId: entry.brandId,
     brandName: entry.brandName,
     businessModule: entry.businessModule,
-    templates: entry.templates,
+    templates: {
+      otp: Array.isArray(templates.otp) ? templates.otp : [],
+      notify: Array.isArray(templates.notify) ? templates.notify : [],
+      email: Array.isArray(templates.email) ? templates.email : [],
+    },
     submittedAt: entry.submittedAt,
     approvedAt: entry.approvedAt ?? null,
     rejectedAt: entry.rejectedAt ?? null,
@@ -267,7 +325,7 @@ function createBrandRequest(input) {
     brandId,
     brandName,
     businessModule: DEFAULT_BUSINESS_MODULE,
-    templates: { otp: templates.otp, notify: templates.notify },
+    templates: { otp: templates.otp, notify: templates.notify, email: templates.email },
     otpPolicy: templates.otpPolicy,
     approvedAt: null,
     rejectedAt: null,
@@ -279,6 +337,41 @@ function createBrandRequest(input) {
   const document = loadBrandRequestsFile();
   document.requests.unshift(request);
   saveBrandRequestsFile(document);
+
+  const requestedChannels = buildRequestedChannels(request.templates);
+
+  if (isMongoConfigured()) {
+    accessRequestRepo.insertAccessRequest({
+      requestId: request.id,
+      status: 'submitted',
+      brandId: request.brandId,
+      brandName: request.brandName,
+      businessModuleId: request.businessModule,
+      requester: request.submittedBy,
+      requestedApplication: {
+        name: team,
+        description: notes || null,
+        environment: 'production',
+      },
+      requestedTemplates: request.templates,
+      requestedChannels,
+      otpPolicy: request.otpPolicy,
+    }).catch((err) => {
+      logSystem('mongodb_access_request_create_failed', 'failed', {}, {
+        requestId: request.id,
+        message: err instanceof Error ? err.message : 'unknown',
+      });
+    });
+
+    auditService.recordAudit({
+      action: 'access_request.submitted',
+      brandId: request.brandId,
+      actor: { type: 'user', id: email, email },
+      resource: { type: 'accessRequest', id: request.id },
+      after: { status: 'submitted', brandId: request.brandId },
+      requestId: request.id,
+    });
+  }
 
   logSystem('brand_request_created', 'completed', {}, {
     requestId: request.id,
@@ -310,7 +403,7 @@ function listBrandRequests({ status } = {}) {
   return serialized;
 }
 
-function approveBrandRequest(requestId, options = {}) {
+async function approveBrandRequest(requestId, options = {}) {
   const document = loadBrandRequestsFile();
   const index = document.requests.findIndex((entry) => entry.id === requestId);
   if (index < 0) {
@@ -342,11 +435,15 @@ function approveBrandRequest(requestId, options = {}) {
   const validatedTemplates = validateRequestedTemplates(templates);
 
   const otpPolicy = {
-    templateKey: options.otpPolicy?.templateKey ?? current.otpPolicy?.templateKey ?? 'LOGIN_OTP',
-    dltEnabled: options.otpPolicy?.dltEnabled ?? current.otpPolicy?.dltEnabled ?? true,
+    templateKey: options.otpPolicy?.templateKey
+      ?? current.otpPolicy?.templateKey
+      ?? validatedTemplates.otpPolicy.templateKey,
+    dltEnabled: options.otpPolicy?.dltEnabled
+      ?? current.otpPolicy?.dltEnabled
+      ?? validatedTemplates.otpPolicy.dltEnabled,
     legacyRouteEnabled: options.otpPolicy?.legacyRouteEnabled
       ?? current.otpPolicy?.legacyRouteEnabled
-      ?? false,
+      ?? validatedTemplates.otpPolicy.legacyRouteEnabled,
   };
 
   const now = new Date().toISOString();
@@ -357,13 +454,70 @@ function approveBrandRequest(requestId, options = {}) {
     templates: {
       otp: validatedTemplates.otp,
       notify: validatedTemplates.notify,
+      email: validatedTemplates.email,
     },
     otpPolicy,
     approvedAt: now,
+    approvedFromRequestId: current.id,
     notes: `Approved from request ${current.id}`,
   };
 
-  upsertActiveBrand(brandId, registryEntry);
+  // Phase 2: activate brand (JSON) + provision application/credential in Mongo when configured.
+  /** @type {{ appId?: string, apiKey?: string, secretPrefix?: string } | null} */
+  let oneTimeCredential = null;
+
+  if (isMongoConfigured()) {
+    let mongoRequest = await accessRequestRepo.findByRequestId(requestId);
+    if (!mongoRequest) {
+      mongoRequest = {
+        requestId: current.id,
+        brandId: current.brandId,
+        brandName: current.brandName,
+        businessModuleId: current.businessModule,
+        requester: current.submittedBy,
+        requestedTemplates: current.templates,
+        requestedApplication: {
+          name: current.submittedBy?.team ?? brandName,
+          description: current.submittedBy?.notes ?? null,
+          environment: 'production',
+        },
+        requestedChannels: buildRequestedChannels(current.templates),
+        otpPolicy: current.otpPolicy,
+      };
+      // Ensure Mongo has the request before provisioning (legacy JSON-only rows).
+      try {
+        await accessRequestRepo.insertAccessRequest({
+          ...mongoRequest,
+          status: 'submitted',
+          source: 'json_approve_sync',
+        });
+      } catch (insertErr) {
+        // Unique conflict is fine if a concurrent writer inserted it.
+        logSystem('mongodb_access_request_sync_on_approve', 'failed', {}, {
+          requestId,
+          message: insertErr instanceof Error ? insertErr.message : 'unknown',
+        });
+        mongoRequest = await accessRequestRepo.findByRequestId(requestId) ?? mongoRequest;
+      }
+    }
+
+    const provisioned = await provisionApprovedAccess(mongoRequest, {
+      reviewedBy: options.reviewedBy,
+      brandName,
+      templates: registryEntry.templates,
+      otpPolicy,
+    });
+
+    if (provisioned.oneTimeSecret && provisioned.appId) {
+      oneTimeCredential = {
+        appId: provisioned.appId,
+        apiKey: provisioned.oneTimeSecret,
+        secretPrefix: provisioned.credential?.secretPrefix ?? null,
+      };
+    }
+  }
+
+  await brandStore.upsertActiveBrand(brandId, registryEntry);
 
   const updated = {
     ...current,
@@ -381,9 +535,20 @@ function approveBrandRequest(requestId, options = {}) {
   logSystem('brand_request_approved', 'completed', {}, {
     requestId: updated.id,
     brandId: updated.brandId,
+    provisionedAppId: oneTimeCredential?.appId ?? null,
   });
 
-  return serializeAdminRequest(updated);
+  const serialized = serializeAdminRequest(updated);
+  if (oneTimeCredential) {
+    serialized.oneTimeCredential = {
+      appId: oneTimeCredential.appId,
+      apiKey: oneTimeCredential.apiKey,
+      secretPrefix: oneTimeCredential.secretPrefix,
+      warning: 'This apiKey is shown once. Store it securely. It cannot be retrieved again.',
+    };
+  }
+
+  return serialized;
 }
 
 function rejectBrandRequest(requestId, { reason, reviewedBy } = {}) {
@@ -417,6 +582,35 @@ function rejectBrandRequest(requestId, { reason, reviewedBy } = {}) {
   document.requests[index] = updated;
   saveBrandRequestsFile(document);
 
+  if (isMongoConfigured()) {
+    accessRequestRepo.updateAccessRequest(requestId, {
+      status: 'rejected',
+      rejectionReason,
+      rejectedAt: new Date(),
+      reviewedBy: updated.reviewedBy,
+    }).catch((err) => {
+      logSystem('mongodb_access_request_reject_failed', 'failed', {}, {
+        requestId,
+        message: err instanceof Error ? err.message : 'unknown',
+      });
+    });
+
+    accessRequestRepo.appendApprovalHistory(requestId, {
+      action: 'rejected',
+      actor: updated.reviewedBy ?? 'ops',
+      notes: rejectionReason,
+    }).catch(() => {});
+
+    auditService.recordAudit({
+      action: 'access_request.rejected',
+      brandId: updated.brandId,
+      actor: { type: 'user', id: updated.reviewedBy ?? 'ops' },
+      resource: { type: 'accessRequest', id: requestId },
+      after: { status: 'rejected', rejectionReason },
+      requestId,
+    });
+  }
+
   logSystem('brand_request_rejected', 'completed', {}, {
     requestId: updated.id,
     brandId: updated.brandId,
@@ -428,8 +622,11 @@ function rejectBrandRequest(requestId, { reason, reviewedBy } = {}) {
 module.exports = {
   BRAND_REQUESTS_PATH,
   REQUEST_STATUSES,
+  EMAIL_TEMPLATE_KEYS,
   loadBrandRequestsFile,
   listCatalogTemplates,
+  validateRequestedTemplates,
+  buildRequestedChannels,
   createBrandRequest,
   getBrandRequest,
   listBrandRequests,

@@ -1,5 +1,5 @@
-const { allowedApps } = require('../config/allowedApps');
 const { normalizeAppId } = require('../utils/appId');
+const credentialService = require('../services/credential.service');
 
 function unauthorized(req, res, message) {
   return res.status(401).json({
@@ -10,19 +10,34 @@ function unauthorized(req, res, message) {
   });
 }
 
-function forbidden(req, res) {
+function forbidden(req, res, message = 'Invalid app credentials') {
   return res.status(403).json({
     success: false,
     error: 'forbidden',
-    message: 'Invalid app credentials',
+    message,
+    requestId: req.requestId,
+  });
+}
+
+function credentialError(req, res, result) {
+  const status = result.status ?? 403;
+  const error = result.error ?? 'forbidden';
+  const message = result.message ?? 'Invalid app credentials';
+
+  return res.status(status).json({
+    success: false,
+    error,
+    message,
     requestId: req.requestId,
   });
 }
 
 /**
- * Requires appId and apiKey on the JSON body. Validates against {@link allowedApps}.
+ * Requires appId and apiKey on the JSON body.
+ * Validates against MongoDB credentials (hybrid/env fallback).
+ * Attaches req.authContext on success.
  */
-function validateAppApiKey(req, res, next) {
+async function validateAppApiKey(req, res, next) {
   const body = req.body;
   const appId = body?.appId;
   const apiKey = body?.apiKey;
@@ -54,16 +69,28 @@ function validateAppApiKey(req, res, next) {
     return forbidden(req, res);
   }
 
-  const expected = allowedApps[normalizedAppId];
-  if (expected === undefined) {
-    return forbidden(req, res);
-  }
+  try {
+    const result = await credentialService.authenticate(normalizedAppId, apiKey.trim());
+    if (!result.ok) {
+      return credentialError(req, res, result);
+    }
 
-  if (expected !== apiKey.trim()) {
-    return forbidden(req, res);
-  }
+    req.authContext = result.context;
+    req.normalizedAppId = normalizedAppId;
 
-  next();
+    const appCheck = await credentialService.assertApplicationActive(result.context);
+    if (!appCheck.ok) {
+      return credentialError(req, res, {
+        status: appCheck.status,
+        error: appCheck.error,
+        message: 'Application is not active',
+      });
+    }
+
+    next();
+  } catch (err) {
+    next(err);
+  }
 }
 
 module.exports = validateAppApiKey;

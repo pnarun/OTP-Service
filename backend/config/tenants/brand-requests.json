@@ -2,6 +2,132 @@
   "version": 1,
   "requests": [
     {
+      "id": "req_20260913065538_ace4e8",
+      "status": "approved",
+      "submittedAt": "2026-09-13T06:55:38.413Z",
+      "submittedBy": {
+        "name": "Arun",
+        "email": "arunpn866@gmail.com",
+        "team": "Demo1",
+        "notes": null
+      },
+      "brandId": "demo1",
+      "brandName": "demo1",
+      "businessModule": "apnakart",
+      "templates": {
+        "otp": [],
+        "notify": [],
+        "email": [
+          "NOTIFY_USER"
+        ]
+      },
+      "otpPolicy": {
+        "templateKey": "LOGIN_OTP",
+        "dltEnabled": true,
+        "legacyRouteEnabled": false
+      },
+      "approvedAt": "2026-09-13T06:55:51.529Z",
+      "rejectedAt": null,
+      "rejectionReason": null,
+      "reviewedBy": "ops",
+      "notes": null
+    },
+    {
+      "id": "req_20260913063218_158ee4",
+      "status": "approved",
+      "submittedAt": "2026-09-13T06:32:18.764Z",
+      "submittedBy": {
+        "name": "Arun",
+        "email": "arunpn866@gmail.com",
+        "team": "Demo business",
+        "notes": null
+      },
+      "brandId": "demo",
+      "brandName": "demo",
+      "businessModule": "apnakart",
+      "templates": {
+        "otp": [],
+        "notify": [],
+        "email": [
+          "NOTIFY_USER"
+        ]
+      },
+      "otpPolicy": {
+        "templateKey": "LOGIN_OTP",
+        "dltEnabled": true,
+        "legacyRouteEnabled": false
+      },
+      "approvedAt": "2026-09-13T06:43:41.557Z",
+      "rejectedAt": null,
+      "rejectionReason": null,
+      "reviewedBy": "ops",
+      "notes": null
+    },
+    {
+      "id": "req_20260823062535_f56d72",
+      "status": "pending",
+      "submittedAt": "2026-08-23T06:25:35.247Z",
+      "submittedBy": {
+        "name": "Arun P N",
+        "email": "arunpn1999@gmail.com",
+        "team": "testing",
+        "notes": null
+      },
+      "brandId": "test",
+      "brandName": "Test",
+      "businessModule": "apnakart",
+      "templates": {
+        "otp": [
+          "LOGIN_OTP"
+        ],
+        "notify": [
+          "ORDER_PLACED",
+          "ORDER_DELIVERED",
+          "OUT_FOR_DELIVERY"
+        ]
+      },
+      "otpPolicy": {
+        "templateKey": "LOGIN_OTP",
+        "dltEnabled": true,
+        "legacyRouteEnabled": false
+      },
+      "approvedAt": null,
+      "rejectedAt": null,
+      "rejectionReason": null,
+      "reviewedBy": null,
+      "notes": null
+    },
+    {
+      "id": "req_20260823061011_7e470f",
+      "status": "approved",
+      "submittedAt": "2026-08-23T06:10:11.289Z",
+      "submittedBy": {
+        "name": "ELVA Notify Approval E2E",
+        "email": "arunpn866@gmail.com",
+        "team": "ELVA Notify Approval E2E Test",
+        "notes": "Automated approval-chain validation — safe to approve"
+      },
+      "brandId": "elva-e2e-apr1",
+      "brandName": "ELVA E2E Appr Test",
+      "businessModule": "apnakart",
+      "templates": {
+        "otp": [
+          "LOGIN_OTP"
+        ],
+        "notify": []
+      },
+      "otpPolicy": {
+        "templateKey": "LOGIN_OTP",
+        "dltEnabled": true,
+        "legacyRouteEnabled": false
+      },
+      "approvedAt": "2026-08-23T06:10:15.323Z",
+      "rejectedAt": null,
+      "rejectionReason": null,
+      "reviewedBy": "e2e-validation-ops",
+      "notes": null
+    },
+    {
       "id": "req_20260617154803_b86980",
       "status": "approved",
       "submittedAt": "2026-06-17T15:48:03.898Z",

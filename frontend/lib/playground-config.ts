@@ -180,10 +180,12 @@ export const PLAYGROUND_TABS: PlaygroundTab[] = [
             method: 'POST',
             path: '/notify',
             title: 'POST /notify (HTML)',
-            description: 'Send EMAIL with HTML body. brandId is not required for email notify.',
+            description:
+              'Send EMAIL with HTML body. Credentials from the fields above are merged into the request (appId, apiKey, brandId).',
             sampleJson: jsonSample({
               appId: SAMPLE_APP_ID,
               apiKey: SAMPLE_API_KEY,
+              brandId: SAMPLE_BRAND_ID,
               channel: 'EMAIL',
               to: [SAMPLE_EMAIL],
               subject: 'ELVA Sales test',

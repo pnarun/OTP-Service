@@ -88,6 +88,65 @@
       },
       "approvedAt": "2026-06-17T15:49:24.851Z",
       "notes": "Approved from request req_20260617154803_b86980"
+    },
+    "elva-e2e-apr1": {
+      "status": "active",
+      "brandName": "ELVA E2E Appr Test",
+      "businessModule": "apnakart",
+      "templates": {
+        "otp": [
+          "LOGIN_OTP"
+        ],
+        "notify": []
+      },
+      "otpPolicy": {
+        "templateKey": "LOGIN_OTP",
+        "dltEnabled": true,
+        "legacyRouteEnabled": false
+      },
+      "approvedAt": "2026-08-23T06:10:15.323Z",
+      "approvedFromRequestId": "req_20260823061011_7e470f",
+      "notes": "Approved from request req_20260823061011_7e470f"
+    },
+    "demo": {
+      "status": "active",
+      "brandName": "demo",
+      "businessModule": "apnakart",
+      "templates": {
+        "otp": [],
+        "notify": [],
+        "email": [
+          "NOTIFY_USER"
+        ]
+      },
+      "otpPolicy": {
+        "templateKey": "LOGIN_OTP",
+        "dltEnabled": true,
+        "legacyRouteEnabled": false
+      },
+      "approvedAt": "2026-09-13T06:43:41.557Z",
+      "approvedFromRequestId": "req_20260913063218_158ee4",
+      "notes": "Approved from request req_20260913063218_158ee4"
+    },
+    "demo1": {
+      "status": "active",
+      "brandName": "demo1",
+      "businessModule": "apnakart",
+      "templates": {
+        "otp": [],
+        "notify": [],
+        "email": [
+          "NOTIFY_USER"
+        ]
+      },
+      "otpPolicy": {
+        "templateKey": "LOGIN_OTP",
+        "dltEnabled": true,
+        "legacyRouteEnabled": false
+      },
+      "approvedAt": "2026-09-13T06:55:51.529Z",
+      "approvedFromRequestId": "req_20260913065538_ace4e8",
+      "notes": "Approved from request req_20260913065538_ace4e8"
     }
   }
 }

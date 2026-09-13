@@ -69,6 +69,61 @@ function resolveClientErrorMessage(err) {
   return 'Failed to send notification';
 }
 
+function buildEmailDeliverySummary(err) {
+  const delivery = err instanceof Error && err.emailDelivery && typeof err.emailDelivery === 'object'
+    ? err.emailDelivery
+    : null;
+  if (!delivery) {
+    return null;
+  }
+  return {
+    transactionId: delivery.transactionId ?? null,
+    finalOutcome: delivery.finalOutcome ?? null,
+    selectedProvider: delivery.selectedProvider ?? null,
+    attemptCount: Array.isArray(delivery.attempts) ? delivery.attempts.length : 0,
+    attempts: Array.isArray(delivery.attempts)
+      ? delivery.attempts.map((a) => ({
+        provider: a.provider,
+        outcome: a.outcome,
+        statusCode: a.statusCode ?? null,
+      }))
+      : [],
+  };
+}
+
+function resolveNotifyFailureStatus(err, channel) {
+  if (channel === 'EMAIL') {
+    if (err?.providerFailure?.providerCode === 'email_providers_not_configured') {
+      return 503;
+    }
+    if (err?.emailDelivery?.finalOutcome === 'UNKNOWN') {
+      return 502;
+    }
+  }
+  return 500;
+}
+
+function buildNotifyFailurePayload(req, err, normalizedChannel) {
+  const clientMessage = resolveClientErrorMessage(err);
+  const provider = buildDevProviderError(err);
+  const delivery = normalizedChannel === 'EMAIL' ? buildEmailDeliverySummary(err) : null;
+  const isUnknown = delivery?.finalOutcome === 'UNKNOWN';
+  const isConfig = err?.providerFailure?.providerCode === 'email_providers_not_configured';
+
+  return {
+    success: false,
+    error: isConfig
+      ? 'email_providers_not_configured'
+      : (isUnknown ? 'notification_unknown' : 'notification_failed'),
+    message: clientMessage,
+    channel: normalizedChannel,
+    requestId: req.requestId,
+    ...(delivery?.transactionId ? { transactionId: delivery.transactionId } : {}),
+    ...(delivery ? { delivery } : {}),
+    ...(provider ? { provider } : {}),
+  };
+}
+
 function validateRecipients(to) {
   if (!Array.isArray(to)) {
     return 'to must be an array with at least one value';
@@ -180,6 +235,8 @@ async function handleNotify(req, res) {
           to,
           validatedTemplate: validated,
           requestId: req.requestId,
+          authContext: req.authContext,
+          brandId: req.resolvedBrandId ?? req.resolvedBrand?.brandId,
         });
 
         return res.status(200).json({
@@ -213,27 +270,23 @@ async function handleNotify(req, res) {
   }
 
   try {
-    await notificationService.sendNotification({
+    const result = await notificationService.sendNotification({
       ...req.body,
       requestId: req.requestId,
+      authContext: req.authContext,
+      brandId: req.resolvedBrandId ?? req.resolvedBrand?.brandId ?? req.body?.brandId,
     });
     return res.status(200).json({
       success: true,
       message: 'Notification sent',
       channel: normalizedChannel,
       requestId: req.requestId,
+      ...(result?.transactionId ? { transactionId: result.transactionId } : {}),
+      ...(result?.provider ? { provider: { name: result.provider } } : {}),
     });
   } catch (err) {
-    const clientMessage = resolveClientErrorMessage(err);
-    const provider = buildDevProviderError(err);
-    return res.status(500).json({
-      success: false,
-      error: 'notification_failed',
-      message: clientMessage,
-      channel: normalizedChannel,
-      requestId: req.requestId,
-      ...(provider ? { provider } : {}),
-    });
+    const status = resolveNotifyFailureStatus(err, normalizedChannel);
+    return res.status(status).json(buildNotifyFailurePayload(req, err, normalizedChannel));
   }
 }
 

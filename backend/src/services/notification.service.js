@@ -1,6 +1,8 @@
 const config = require('../config/env');
 const smsService = require('./sms/sms.service');
 const emailService = require('./email/email.service');
+const emailOrchestrator = require('./email/orchestrator');
+const { generateEmailTransactionId } = require('./email/transactionId');
 const { getOtpTemplate, getOtpEmailSubject } = require('./email/emailTemplates');
 const { buildDltPayload } = require('./dltPayloadResolver.service');
 const {
@@ -19,6 +21,126 @@ const {
   maskVariablesValues,
   redactResolvedVariables,
 } = require('../utils/otpLogRedaction');
+const messagePersistence = require('./messagePersistence.service');
+const failureAlert = require('./alerts/failureAlert.service');
+
+function resolveMessageType({ isOtpDispatch, isTemplateSms, isLegacySms, normalizedChannel }) {
+  if (isOtpDispatch) {
+    return 'OTP';
+  }
+  if (isTemplateSms) {
+    return 'TRANSACTIONAL';
+  }
+  if (isLegacySms) {
+    return 'LEGACY_SMS';
+  }
+  if (normalizedChannel === 'EMAIL') {
+    return 'TRANSACTIONAL';
+  }
+  return 'TRANSACTIONAL';
+}
+
+function truncatePreview(value, max = 120) {
+  if (typeof value !== 'string' || !value.trim()) {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > max ? `${trimmed.slice(0, max)}…` : trimmed;
+}
+
+/**
+ * @param {object} params
+ * @returns {Promise<object[]>}
+ */
+async function createOutboundMessageRecords(params) {
+  const recipients = Array.isArray(params.to) ? params.to : [params.to];
+  const docs = [];
+
+  for (const recipientValue of recipients) {
+    const doc = await messagePersistence.createMessageRecord({
+      requestId: params.requestId,
+      brandId: params.brandId ?? 'unknown',
+      applicationId: params.authContext?.applicationId ?? null,
+      credentialId: params.authContext?.credentialId ?? null,
+      channel: params.normalizedChannel,
+      messageType: params.messageType,
+      recipientValue: String(recipientValue),
+      template: params.templateMeta ?? null,
+      content: params.contentPreview ? { preview: params.contentPreview } : null,
+      provider: { name: params.provider ?? null },
+      otpContext: params.otpContext ?? null,
+      transactionId: params.transactionId ?? null,
+    });
+    if (doc) {
+      docs.push(doc);
+    }
+  }
+
+  return docs;
+}
+
+async function finalizeMessageSuccess(messageDoc, providerMeta = {}) {
+  await messagePersistence.updateMessageStatus(messageDoc, 'provider_accepted', {
+    provider: {
+      ...(messageDoc.provider ?? {}),
+      ...providerMeta,
+    },
+    patch: providerMeta.transactionId
+      ? { transactionId: providerMeta.transactionId }
+      : undefined,
+  });
+
+  await messagePersistence.recordDeliveryEvent({
+    messageId: messageDoc.messageId,
+    brandId: messageDoc.brandId,
+    eventType: 'PROVIDER_ACCEPTED',
+    normalizedStatus: 'provider_accepted',
+    provider: providerMeta.name ?? messageDoc.provider?.name ?? null,
+    providerMessageId: providerMeta.messageId ?? null,
+    providerCode: providerMeta.errorCode ?? null,
+    providerMessage: providerMeta.errorMessage ?? null,
+    source: 'inline_send',
+  });
+
+  await messagePersistence.recordUsage({
+    brandId: messageDoc.brandId,
+    applicationId: messageDoc.applicationId,
+    channel: messageDoc.channel,
+    messageType: messageDoc.messageType,
+    messageId: messageDoc.messageId,
+  });
+}
+
+async function finalizeMessageFailure(messageDoc, providerFailure = {}) {
+  const isUnknown = providerFailure.providerCode === 'UNKNOWN'
+    || providerFailure.finalOutcome === 'UNKNOWN'
+    || providerFailure.outcome === 'UNKNOWN';
+  const status = isUnknown ? 'unknown' : 'failed';
+
+  await messagePersistence.updateMessageStatus(messageDoc, status, {
+    provider: {
+      ...(messageDoc.provider ?? {}),
+      name: providerFailure.provider ?? messageDoc.provider?.name ?? null,
+      httpStatus: providerFailure.httpStatus ?? null,
+      errorCode: providerFailure.providerCode ?? null,
+      errorMessage: providerFailure.providerMessage ?? null,
+    },
+    patch: providerFailure.transactionId
+      ? { transactionId: providerFailure.transactionId }
+      : undefined,
+  });
+
+  await messagePersistence.recordDeliveryEvent({
+    messageId: messageDoc.messageId,
+    brandId: messageDoc.brandId,
+    eventType: isUnknown ? 'PROVIDER_UNKNOWN' : 'PROVIDER_FAILED',
+    normalizedStatus: status,
+    provider: providerFailure.provider ?? messageDoc.provider?.name ?? null,
+    providerCode: providerFailure.providerCode ?? null,
+    providerMessage: providerFailure.providerMessage ?? null,
+    source: 'inline_send',
+  });
+}
 
 function normalizeChannel(channel) {
   if (typeof channel !== 'string' || !channel.trim()) {
@@ -32,7 +154,8 @@ function providerForChannel(channel) {
     return 'fast2sms';
   }
   if (channel === 'EMAIL') {
-    return 'sendgrid';
+    // Phase 3: selected email provider from EMAIL_PROVIDER_ORDER (no failover yet).
+    return emailOrchestrator.getPrimaryProviderName() || 'email';
   }
   return null;
 }
@@ -241,6 +364,12 @@ async function handleEmail({
   html,
   message,
   templateData,
+  requestId,
+  messageId,
+  applicationId,
+  brandId,
+  templateKey,
+  transactionId,
 }) {
   const resolvedSubject = subject?.trim()
     || (templateData?.otp
@@ -268,7 +397,22 @@ async function handleEmail({
     throw new Error('Email body is required');
   }
 
-  return emailService.sendEmail({ to, subject: resolvedSubject, html: resolvedHtml });
+  const recipientValue = Array.isArray(to) ? to[0] : to;
+
+  return emailService.sendEmail({
+    to,
+    subject: resolvedSubject,
+    html: resolvedHtml,
+    requestId,
+    messageId,
+    applicationId,
+    brandId,
+    templateKey,
+    transactionId,
+    recipient: recipientValue
+      ? { type: 'email', valueNormalized: String(recipientValue) }
+      : null,
+  });
 }
 
 function resolveInitialOtpLogDetails(templateData, normalizedChannel) {
@@ -302,6 +446,8 @@ async function sendNotification({
   message,
   templateData,
   validatedTemplate,
+  authContext,
+  brandId,
 }) {
   const normalizedChannel = normalizeChannel(channel);
   const recipientCount = Array.isArray(to) ? to.length : 1;
@@ -309,6 +455,56 @@ async function sendNotification({
   const isOtpDispatch = Boolean(templateData?.otp);
   const isLegacySms = normalizedChannel === 'SMS' && typeof message === 'string' && message.trim();
   const isTemplateSms = Boolean(validatedTemplate);
+  const messageType = resolveMessageType({
+    isOtpDispatch,
+    isTemplateSms,
+    isLegacySms,
+    normalizedChannel,
+  });
+  const resolvedBrandId = brandId ?? templateData?.brandId ?? authContext?.brandId ?? 'unknown';
+  const templateMeta = validatedTemplate
+    ? {
+      templateKey: validatedTemplate.templateKey,
+      templateVersionId: validatedTemplate.templateVersionId ?? null,
+      businessModuleId: validatedTemplate.businessId ?? null,
+    }
+    : (isOtpDispatch ? { templateKey: templateData?.templateKey ?? null } : null);
+  const contentPreview = truncatePreview(html ?? message ?? subject ?? null);
+  const emailTransactionId = normalizedChannel === 'EMAIL'
+    ? generateEmailTransactionId()
+    : null;
+
+  let messageDocs = [];
+  try {
+    messageDocs = await createOutboundMessageRecords({
+      requestId,
+      to,
+      brandId: resolvedBrandId,
+      authContext,
+      normalizedChannel,
+      messageType,
+      templateMeta,
+      contentPreview,
+      provider,
+      transactionId: emailTransactionId,
+    });
+    for (const doc of messageDocs) {
+      await messagePersistence.updateMessageStatus(doc, 'processing');
+      await messagePersistence.recordDeliveryEvent({
+        messageId: doc.messageId,
+        brandId: doc.brandId,
+        eventType: 'PROVIDER_REQUEST',
+        normalizedStatus: 'processing',
+        provider: provider,
+        source: 'inline_send',
+      });
+    }
+  } catch (persistErr) {
+    logErrorCategory('message_persist_prepare_failed', 'failed', buildLogContext({ requestId }), {
+      error: persistErr instanceof Error ? persistErr.message : 'unknown',
+    });
+  }
+
   const otpLogDetails = isOtpDispatch
     ? resolveInitialOtpLogDetails(templateData, normalizedChannel)
     : {};
@@ -352,9 +548,16 @@ async function sendNotification({
       templateData,
       validatedTemplate,
       logContext: baseContext,
+      requestId,
+      messageId: messageDocs[0]?.messageId ?? null,
+      applicationId: authContext?.applicationId ?? null,
+      brandId: resolvedBrandId,
+      templateKey: templateMeta?.templateKey ?? null,
+      transactionId: emailTransactionId,
     });
 
     const otpSmsResult = normalizedChannel === 'SMS' ? handlerResult : undefined;
+    const emailResult = normalizedChannel === 'EMAIL' ? handlerResult : undefined;
     if (isOtpDispatch && otpSmsResult) {
       otpLogDetails.deliveryMode = otpSmsResult.deliveryMode;
       otpLogDetails.fallbackAllowed = otpSmsResult.fallbackAllowed;
@@ -377,12 +580,54 @@ async function sendNotification({
     } else {
       logNotification('notification_sent', 'sent', baseContext, { recipientCount });
     }
+
+    for (const doc of messageDocs) {
+      try {
+        await finalizeMessageSuccess(doc, {
+          name: emailResult?.provider ?? provider,
+          messageId: emailResult?.providerMessageId ?? null,
+          transactionId: emailResult?.transactionId ?? emailTransactionId,
+        });
+      } catch (persistErr) {
+        // Provider already accepted — never convert persistence failure into provider failure.
+        logErrorCategory('message_persist_after_accept_failed', 'failed', baseContext, {
+          messageId: doc.messageId,
+          transactionId: emailResult?.transactionId ?? emailTransactionId,
+          provider: emailResult?.provider ?? provider,
+          error: persistErr instanceof Error ? persistErr.message : 'unknown',
+        });
+      }
+    }
+
+    if (emailResult) {
+      return {
+        channel: normalizedChannel,
+        transactionId: emailResult.transactionId,
+        provider: emailResult.provider,
+        finalOutcome: emailResult.finalOutcome,
+      };
+    }
+    return undefined;
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : 'Unknown error';
     const providerFailure =
       err instanceof Error && err.providerFailure
         ? err.providerFailure
         : extractProviderFailureFromError(err);
+
+    if (err instanceof Error && err.emailDelivery) {
+      providerFailure.transactionId = err.emailDelivery.transactionId;
+      providerFailure.finalOutcome = err.emailDelivery.finalOutcome;
+      if (err.emailDelivery.finalOutcome === 'UNKNOWN') {
+        providerFailure.providerCode = providerFailure.providerCode || 'UNKNOWN';
+        providerFailure.outcome = 'UNKNOWN';
+      }
+      if (!providerFailure.provider && err.emailDelivery.selectedProvider) {
+        providerFailure.provider = err.emailDelivery.selectedProvider;
+      }
+    } else if (emailTransactionId) {
+      providerFailure.transactionId = emailTransactionId;
+    }
 
     if (isOtpDispatch) {
       logErrorCategory('otp_notification_failed', 'provider_failed', baseContext, {
@@ -417,6 +662,43 @@ async function sendNotification({
         httpStatus: providerFailure.httpStatus,
       });
     }
+
+    for (const doc of messageDocs) {
+      await finalizeMessageFailure(doc, providerFailure);
+    }
+
+    // Phase 4 observer — final failure alerts only. Never affects delivery outcome.
+    try {
+      const emailDelivery = err instanceof Error ? err.emailDelivery : null;
+      const isUnknown = emailDelivery?.finalOutcome === 'UNKNOWN'
+        || providerFailure.finalOutcome === 'UNKNOWN'
+        || providerFailure.providerCode === 'UNKNOWN'
+        || providerFailure.outcome === 'UNKNOWN';
+
+      if (!isUnknown) {
+        await failureAlert.maybeSendDeliveryFailureAlert({
+          channel: normalizedChannel,
+          requestId,
+          transactionId: providerFailure.transactionId
+            || emailDelivery?.transactionId
+            || emailTransactionId
+            || null,
+          messageId: messageDocs[0]?.messageId ?? null,
+          applicationId: authContext?.applicationId ?? null,
+          appId: authContext?.appId ?? templateData?.appId ?? null,
+          brandId: resolvedBrandId,
+          templateKey: templateMeta?.templateKey ?? null,
+          recipientValue: recipientFromList(to),
+          providerFailure,
+          emailDelivery: emailDelivery ?? null,
+        });
+      }
+    } catch (alertErr) {
+      logErrorCategory('failure_alert_hook_failed', 'failed', baseContext, {
+        error: alertErr instanceof Error ? alertErr.message : 'unknown',
+      });
+    }
+
     attachProviderFailureToError(err, providerFailure);
     throw err;
   }

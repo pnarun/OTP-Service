@@ -5,7 +5,13 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "dev": "node --watch --watch-path=./src --watch-path=./.env src/server.js"
+    "dev": "node --watch --watch-path=./src --watch-path=./.env src/server.js",
+    "test": "node --test test/**/*.test.js",
+    "migrate:mongodb": "node scripts/migrate-to-mongodb.cjs",
+    "migrate:mongodb:dry-run": "node scripts/migrate-to-mongodb.cjs --dry-run",
+    "migrate:mongodb:force": "node scripts/migrate-to-mongodb.cjs --force-update",
+    "migrate:mongodb:verify": "node scripts/verify-mongodb-migration.cjs",
+    "db:indexes": "node scripts/ensure-indexes.cjs"
   },
   "engines": {
     "node": ">=18"
@@ -16,6 +22,7 @@
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "express-rate-limit": "^8.4.1",
+    "mongodb": "^6.21.0",
     "redis": "^4.7.0",
     "uuid": "^14.0.0"
   }

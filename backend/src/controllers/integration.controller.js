@@ -105,20 +105,33 @@ function getRequestAdmin(req, res) {
 
 async function approveRequestAdmin(req, res) {
   try {
-    const request = approveBrandRequest(req.params.requestId, req.body ?? {});
-    await notifyRequesterApproved(request);
+    const request = await approveBrandRequest(req.params.requestId, req.body ?? {});
+    const oneTime = request.oneTimeCredential ?? null;
+    const issuedCredential = oneTime?.appId
+      ? {
+        appId: oneTime.appId,
+        apiKey: oneTime.apiKey,
+        secretPrefix: oneTime.secretPrefix,
+      }
+      : null;
+
+    await notifyRequesterApproved(request, issuedCredential);
 
     return res.status(200).json({
       success: true,
       message: 'Request approved and brand activated',
       requestId: req.requestId,
       request,
+      oneTimeCredential: oneTime,
     });
   } catch (err) {
     const code = err?.code;
     if (code === 'not_found') return jsonError(req, res, 404, 'not_found', err.message);
-    if (code === 'invalid_status' || code === 'brand_already_active') {
+    if (code === 'invalid_status' || code === 'brand_already_active' || code === 'already_approved') {
       return jsonError(req, res, 409, code, err.message);
+    }
+    if (code === 'provision_transaction_failed' || code === 'mongo_required') {
+      return jsonError(req, res, 503, code, err.message);
     }
     const message = err instanceof Error ? err.message : 'Approval failed';
     return jsonError(req, res, 400, 'validation_error', message);

@@ -9,6 +9,7 @@ export interface IntegrationCatalog {
   businessModule: string;
   otp: IntegrationCatalogTemplate[];
   notify: IntegrationCatalogTemplate[];
+  email: IntegrationCatalogTemplate[];
 }
 
 export interface BrandRequestPublic {
@@ -17,7 +18,7 @@ export interface BrandRequestPublic {
   brandId: string;
   brandName: string;
   businessModule: string;
-  templates: { otp: string[]; notify: string[] };
+  templates: { otp: string[]; notify: string[]; email: string[] };
   submittedAt: string;
   approvedAt: string | null;
   rejectedAt: string | null;
@@ -89,7 +90,7 @@ export async function submitIntegrationRequest(payload: {
   brandId: string;
   brandName: string;
   notes?: string;
-  templates: { otp: string[]; notify: string[] };
+  templates: { otp: string[]; notify: string[]; email: string[] };
 }): Promise<{ request: BrandRequestPublic; statusUrl: string }> {
   const data = await fetchIntegrationJson<{ request: BrandRequestPublic; statusUrl: string }>(
     '/integrations/requests',
@@ -114,6 +115,8 @@ function adminHeaders(token: string): HeadersInit {
     'X-Ops-Admin-Token': token,
   };
 }
+
+export { adminHeaders };
 
 export async function verifyOpsAdminToken(token: string): Promise<boolean> {
   const res = await fetch(`${API_BASE_URL}/integrations/admin/session`, {
@@ -151,8 +154,11 @@ export async function approveIntegrationRequest(
   token: string,
   requestId: string,
   body: { reviewedBy?: string; brandName?: string } = {},
-): Promise<BrandRequestAdmin> {
-  const data = await fetchIntegrationJson<{ request: BrandRequestAdmin }>(
+): Promise<{ request: BrandRequestAdmin; oneTimeCredential: OneTimeCredential | null }> {
+  const data = await fetchIntegrationJson<{
+    request: BrandRequestAdmin;
+    oneTimeCredential?: OneTimeCredential | null;
+  }>(
     `/integrations/admin/requests/${encodeURIComponent(requestId)}/approve`,
     {
       method: 'POST',
@@ -160,7 +166,17 @@ export async function approveIntegrationRequest(
       body: JSON.stringify(body),
     },
   );
-  return data.request;
+  return {
+    request: data.request,
+    oneTimeCredential: data.oneTimeCredential ?? null,
+  };
+}
+
+export interface OneTimeCredential {
+  appId: string;
+  apiKey: string;
+  secretPrefix?: string;
+  warning?: string;
 }
 
 export async function rejectIntegrationRequest(
@@ -178,3 +194,68 @@ export async function rejectIntegrationRequest(
   );
   return data.request;
 }
+
+export interface AdminCredentialSummary {
+  credentialId: string;
+  appId: string;
+  secretPrefix: string;
+  applicationId: string;
+  brandId: string;
+  accessRequestId: string | null;
+  scopes: string[];
+  status: string;
+  createdAt: string | null;
+  activatedAt: string | null;
+  lastUsedAt: string | null;
+  renewedAt: string | null;
+  renewedBy: string | null;
+}
+
+export interface AdminApplicationSummary {
+  applicationId: string;
+  brandId: string;
+  name: string;
+  description: string | null;
+  environment: string;
+  status: string;
+  accessRequestId: string | null;
+  createdAt: string | null;
+  credentials: AdminCredentialSummary[];
+}
+
+export interface AdminApplicationsByBrand {
+  brandId: string;
+  applications: AdminApplicationSummary[];
+}
+
+export async function fetchAdminApplications(
+  token: string,
+  brandId?: string,
+): Promise<{ brands: AdminApplicationsByBrand[]; applications: AdminApplicationSummary[] }> {
+  const qs = brandId ? `?brandId=${encodeURIComponent(brandId)}` : '';
+  return fetchIntegrationJson(`/integrations/admin/applications${qs}`, {
+    headers: adminHeaders(token),
+  });
+}
+
+export async function renewCredentialByAppId(
+  token: string,
+  appId: string,
+  body: { reviewedBy?: string; reason?: string } = {},
+): Promise<{
+  success: boolean;
+  message: string;
+  credential: AdminCredentialSummary;
+  application: { applicationId: string; brandId: string; name: string; environment: string; status: string };
+  notifications: { customerEmailSent: boolean; adminEmailSent: boolean };
+}> {
+  return fetchIntegrationJson(
+    `/integrations/admin/credentials/${encodeURIComponent(appId)}/renew`,
+    {
+      method: 'POST',
+      headers: adminHeaders(token),
+      body: JSON.stringify(body),
+    },
+  );
+}
+

@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { MethodBadge } from '@/components/api/method-badge';
 import { API_BASE_URL } from '@/lib/config';
 import { buildCurlCommand, type PlaygroundEndpoint } from '@/lib/playground-config';
+import { buildPlaygroundRequestBody } from '@/lib/playground-request-builder';
 import { cn } from '@/lib/utils';
 
 export interface RequestHistoryItem {
@@ -25,32 +26,6 @@ interface ApiEndpointTesterProps {
   onRequestComplete?: (item: RequestHistoryItem) => void;
 }
 
-function mergeCredentials(body: string, appId: string, apiKey: string, brandId: string, path: string) {
-  try {
-    const parsed = JSON.parse(body) as Record<string, unknown>;
-    if (appId.trim()) parsed.appId = appId.trim();
-    if (apiKey.trim()) parsed.apiKey = apiKey.trim();
-
-    if (!brandId.trim()) {
-      return JSON.stringify(parsed, null, 2);
-    }
-
-    const normalizedBrandId = brandId.trim();
-    if (path.startsWith('/otp')) {
-      parsed.brandId = normalizedBrandId;
-    } else if (path.startsWith('/notify')) {
-      const channel = typeof parsed.channel === 'string' ? parsed.channel.trim().toUpperCase() : 'SMS';
-      if (channel !== 'EMAIL') {
-        parsed.brandId = normalizedBrandId;
-      }
-    }
-
-    return JSON.stringify(parsed, null, 2);
-  } catch {
-    return body;
-  }
-}
-
 export function ApiEndpointTester({ endpoint, appId, apiKey, brandId, onRequestComplete }: ApiEndpointTesterProps) {
   const [body, setBody] = useState(endpoint.sampleJson);
   const [response, setResponse] = useState('');
@@ -60,11 +35,18 @@ export function ApiEndpointTester({ endpoint, appId, apiKey, brandId, onRequestC
   const [copied, setCopied] = useState<'json' | 'curl' | null>(null);
 
   const baseUrl = API_BASE_URL;
+  // Credential bar is authoritative for appId / apiKey / brandId (including EMAIL /notify).
   const effectiveBody = useMemo(
-    () => mergeCredentials(body, appId, apiKey, brandId, endpoint.path),
+    () => buildPlaygroundRequestBody(body, { appId, apiKey, brandId }, endpoint.path),
     [body, appId, apiKey, brandId, endpoint.path],
   );
-  const curl = useMemo(() => buildCurlCommand(baseUrl, endpoint.path, effectiveBody), [baseUrl, endpoint.path, effectiveBody]);
+  const curl = useMemo(() => {
+    try {
+      return buildCurlCommand(baseUrl, endpoint.path, effectiveBody);
+    } catch {
+      return `curl -X POST ${baseUrl}${endpoint.path} \\\n  -H "Content-Type: application/json" \\\n  -d '<invalid JSON — fix request body>'`;
+    }
+  }, [baseUrl, endpoint.path, effectiveBody]);
 
   useEffect(() => {
     setBody(endpoint.sampleJson);
@@ -167,11 +149,14 @@ export function ApiEndpointTester({ endpoint, appId, apiKey, brandId, onRequestC
         <div className="rounded-xl border bg-card shadow-sm">
           <div className="border-b px-4 py-3">
             <h4 className="text-sm font-semibold">Request body</h4>
-            <p className="text-xs text-muted-foreground">Credentials from the bar above are merged on send (appId, apiKey, brandId for OTP and SMS notify).</p>
+            <p className="text-xs text-muted-foreground">
+              Credentials from the fields above are merged into the request (appId, apiKey, brandId).
+              Edit content fields here; credential values always follow the bar above.
+            </p>
           </div>
           <textarea
             className="min-h-[280px] w-full resize-y bg-transparent p-4 font-mono text-sm text-foreground outline-none"
-            value={body}
+            value={effectiveBody}
             onChange={(e) => setBody(e.target.value)}
             spellCheck={false}
           />

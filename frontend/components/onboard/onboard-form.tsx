@@ -27,6 +27,7 @@ export function OnboardForm() {
   const [notes, setNotes] = useState('');
   const [otpTemplates, setOtpTemplates] = useState<Record<string, boolean>>({});
   const [notifyTemplates, setNotifyTemplates] = useState<Record<string, boolean>>({});
+  const [emailTemplates, setEmailTemplates] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     fetchIntegrationCatalog()
@@ -34,10 +35,13 @@ export function OnboardForm() {
         setCatalog(data);
         const otpDefaults: Record<string, boolean> = {};
         const notifyDefaults: Record<string, boolean> = {};
+        const emailDefaults: Record<string, boolean> = {};
         for (const item of data.otp) otpDefaults[item.templateKey] = item.templateKey === 'LOGIN_OTP';
         for (const item of data.notify) notifyDefaults[item.templateKey] = true;
+        for (const item of data.email ?? []) emailDefaults[item.templateKey] = false;
         setOtpTemplates(otpDefaults);
         setNotifyTemplates(notifyDefaults);
+        setEmailTemplates(emailDefaults);
       })
       .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load templates'))
       .finally(() => setLoadingCatalog(false));
@@ -57,6 +61,10 @@ export function OnboardForm() {
     () => Object.entries(notifyTemplates).filter(([, on]) => on).map(([key]) => key),
     [notifyTemplates],
   );
+  const selectedEmail = useMemo(
+    () => Object.entries(emailTemplates).filter(([, on]) => on).map(([key]) => key),
+    [emailTemplates],
+  );
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -71,7 +79,7 @@ export function OnboardForm() {
         brandId: brandId.trim(),
         brandName: brandName.trim(),
         notes: notes.trim() || undefined,
-        templates: { otp: selectedOtp, notify: selectedNotify },
+        templates: { otp: selectedOtp, notify: selectedNotify, email: selectedEmail },
       });
       router.push(`/onboard/status/${encodeURIComponent(result.request.id)}`);
     } catch (err) {
@@ -190,6 +198,31 @@ export function OnboardForm() {
                 checked={Boolean(notifyTemplates[template.templateKey])}
                 onChange={(e) =>
                   setNotifyTemplates((prev) => ({ ...prev, [template.templateKey]: e.target.checked }))
+                }
+              />
+              <span>
+                <span className="font-mono font-medium">{template.templateKey}</span>
+                <span className="mt-0.5 block text-muted-foreground">{template.purpose}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+      </section>
+
+      <section className="space-y-3">
+        <h2 className="text-sm font-semibold">EMAIL Templates</h2>
+        <p className="text-xs text-muted-foreground">
+          Independent of SMS selections. OTP options use <code>POST /otp/send</code>;{' '}
+          <code>NOTIFY_USER</code> uses <code>POST /notify</code> with your own subject and HTML.
+        </p>
+        <div className="space-y-2">
+          {(catalog.email ?? []).map((template) => (
+            <label key={template.templateKey} className="flex items-start gap-2 rounded-md border p-3 text-sm">
+              <input
+                type="checkbox"
+                checked={Boolean(emailTemplates[template.templateKey])}
+                onChange={(e) =>
+                  setEmailTemplates((prev) => ({ ...prev, [template.templateKey]: e.target.checked }))
                 }
               />
               <span>

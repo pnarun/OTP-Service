@@ -9,6 +9,8 @@ const { buildDevProviderError } = require('../utils/providerErrorResponse');
 const { resolveOtpTemplateByBrand } = require('../services/otpDltResolver.service');
 const { getOtpEmailSubject } = require('../services/email/emailTemplates');
 const { getBrand } = require('../services/brandRegistry.service');
+const auditService = require('../services/audit.service');
+const { hashRecipient } = require('../utils/recipientHash');
 
 function requireStringField(body, field) {
   if (body == null || typeof body !== 'object') {
@@ -71,6 +73,19 @@ function assertBrandIdValid(req, res) {
     const message = err instanceof Error ? err.message : 'Invalid brandId';
     validationError(req, res, message);
     return false;
+  }
+
+  if (req.resolvedBrand) {
+    if (!req.resolvedBrand.templates.otp.length) {
+      validationError(
+        req,
+        res,
+        `Brand "${req.normalizedBrandId}" does not have OTP templates enabled`,
+      );
+      return false;
+    }
+    req.brand = req.resolvedBrand;
+    return true;
   }
 
   const brand = getBrand(req.normalizedBrandId);
@@ -222,9 +237,22 @@ async function sendOtpImpl(req, res, next) {
           appId,
         }),
         templateData,
+        authContext: req.authContext,
+        brandId,
       });
     } catch (smsErr) {
       await otpService.revokeOTP(to, brandId);
+      auditService.recordOtpAudit({
+        brandId,
+        applicationId: req.authContext?.applicationId ?? null,
+        credentialId: req.authContext?.credentialId ?? null,
+        requestId: req.requestId,
+        eventType: 'otp_send_failed',
+        outcome: 'failed',
+        channel,
+        recipientHash: hashRecipient(brandId, to),
+        failureReason: 'provider_failed',
+      });
       const provider = buildDevProviderError(smsErr);
       return res.status(502).json({
         success: false,
@@ -238,6 +266,17 @@ async function sendOtpImpl(req, res, next) {
     if (channel === 'SMS') {
       await otpCooldownService.applyAfterSuccessfulSend(to, brandId);
     }
+
+    auditService.recordOtpAudit({
+      brandId,
+      applicationId: req.authContext?.applicationId ?? null,
+      credentialId: req.authContext?.credentialId ?? null,
+      requestId: req.requestId,
+      eventType: 'otp_sent',
+      outcome: 'success',
+      channel,
+      recipientHash: hashRecipient(brandId, to),
+    });
 
     return res.status(200).json({
       success: true,
@@ -332,6 +371,16 @@ async function verifyOtp(req, res, next) {
     });
 
     if (result.valid) {
+      auditService.recordOtpAudit({
+        brandId,
+        applicationId: req.authContext?.applicationId ?? null,
+        credentialId: req.authContext?.credentialId ?? null,
+        requestId: req.requestId,
+        eventType: 'otp_verified',
+        outcome: 'success',
+        channel: email ? 'EMAIL' : 'SMS',
+        recipientHash: hashRecipient(brandId, target),
+      });
       return res.status(200).json({
         success: true,
         message: 'OTP verified successfully',
@@ -343,6 +392,18 @@ async function verifyOtp(req, res, next) {
       status: 400,
       message: 'Verification failed',
     };
+
+    auditService.recordOtpAudit({
+      brandId,
+      applicationId: req.authContext?.applicationId ?? null,
+      credentialId: req.authContext?.credentialId ?? null,
+      requestId: req.requestId,
+      eventType: 'otp_verify_failed',
+      outcome: 'failed',
+      channel: email ? 'EMAIL' : 'SMS',
+      recipientHash: hashRecipient(brandId, target),
+      failureReason: result.reason,
+    });
 
     return res.status(mapped.status).json({
       success: false,
